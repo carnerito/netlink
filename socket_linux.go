@@ -330,6 +330,50 @@ func (h *Handle) SocketDiagTCPInfo(family uint8) ([]*InetDiagTCPInfoResp, error)
 	return result, executeErr
 }
 
+func (h *Handle) SocketDiagTCPInfoSingle(family uint8, sockID SocketID) (*InetDiagTCPInfoResp, error) {
+	// Construct the request
+	req := h.newNetlinkRequest(nl.SOCK_DIAG_BY_FAMILY, unix.NLM_F_DUMP)
+	req.AddData(&socketRequest{
+		Family:   family,
+		Protocol: unix.IPPROTO_TCP,
+		Ext:      (1 << (INET_DIAG_VEGASINFO - 1)) | (1 << (INET_DIAG_INFO - 1)),
+		States:   uint32(0xfff), // all states
+		ID:       sockID,
+	})
+
+	// Do the query and parse the result
+	var result []*InetDiagTCPInfoResp
+	executeErr := req.ExecuteIter(unix.NETLINK_INET_DIAG, nl.SOCK_DIAG_BY_FAMILY, func(msg []byte) bool {
+		sockInfo := &Socket{}
+		var err error
+		if err = sockInfo.deserialize(msg); err != nil {
+			return false
+		}
+		var attrs []syscall.NetlinkRouteAttr
+		if attrs, err = nl.ParseRouteAttr(msg[sizeofSocket:]); err != nil {
+			return false
+		}
+
+		var res *InetDiagTCPInfoResp
+		if res, err = attrsToInetDiagTCPInfoResp(attrs, sockInfo); err != nil {
+			return false
+		}
+
+		result = append(result, res)
+		return true
+	})
+
+	if executeErr != nil && !errors.Is(executeErr, ErrDumpInterrupted) {
+		return nil, executeErr
+	}
+
+	if len(result) != 1 {
+		return nil, fmt.Errorf("not 1 result: %d", len(result))
+	}
+
+	return result[0], executeErr
+}
+
 // SocketDiagTCPInfo requests INET_DIAG_INFO for TCP protocol for specified family type and return with extension TCP info.
 //
 // If the returned error is [ErrDumpInterrupted], results may be inconsistent
